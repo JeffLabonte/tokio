@@ -10,6 +10,7 @@ extern crate tokio_uds;
 use tokio_uds::*;
 
 use std::str;
+use std::path::PathBuf;
 
 use bytes::BytesMut;
 
@@ -59,7 +60,7 @@ fn framed_echo() {
 
     {
         let socket = UnixDatagram::bind(&server_path).unwrap();
-        let server = UnixDatagramFramed::new(socket, StringDatagramCodec);
+        let server = UnixDatagramFramed::<_, PathBuf>::new(socket, StringDatagramCodec);
 
         let (sink, stream) = server.split();
 

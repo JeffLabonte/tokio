@@ -1,6 +1,6 @@
 use std::io;
 use std::os::unix::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::Path;
 
 use futures::{Async, Poll, Stream, Sink, StartSend, AsyncSink};
 
@@ -27,16 +27,17 @@ use bytes::{BytesMut, BufMut};
 /// them into separate objects, allowing them to interact more easily.
 #[must_use = "sinks do nothing unless polled"]
 #[derive(Debug)]
-pub struct UnixDatagramFramed<C> {
+pub struct UnixDatagramFramed<C, P> {
     socket: UnixDatagram,
     codec: C,
     rd: BytesMut,
     wr: BytesMut,
-    out_addr: PathBuf,
+    // This is an Option because `Path` doesn't implement `Default`.
+    out_addr: Option<P>,
     flushed: bool,
 }
 
-impl<C: Decoder> Stream for UnixDatagramFramed<C> {
+impl<C: Decoder, P> Stream for UnixDatagramFramed<C, P> {
     type Item = (C::Item, SocketAddr);
     type Error = C::Error;
 
@@ -58,8 +59,8 @@ impl<C: Decoder> Stream for UnixDatagramFramed<C> {
     }
 }
 
-impl<C: Encoder> Sink for UnixDatagramFramed<C> {
-    type SinkItem = (C::Item, PathBuf);
+impl<C: Encoder, P: AsRef<Path>> Sink for UnixDatagramFramed<C, P> {
+    type SinkItem = (C::Item, P);
     type SinkError = C::Error;
 
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
@@ -74,7 +75,7 @@ impl<C: Encoder> Sink for UnixDatagramFramed<C> {
 
         let (frame, out_addr) = item;
         self.codec.encode(frame, &mut self.wr)?;
-        self.out_addr = out_addr;
+        self.out_addr = Some(out_addr);
         self.flushed = false;
         trace!("frame encoded; length={}", self.wr.len());
 
@@ -87,7 +88,10 @@ impl<C: Encoder> Sink for UnixDatagramFramed<C> {
         }
 
         trace!("flushing frame; length={}", self.wr.len());
-        let n = try_ready!(self.socket.poll_send_to(&self.wr, &self.out_addr));
+        let out_addr = self.out_addr
+            .as_ref()
+            .expect("poll_complete before start_send");
+        let n = try_ready!(self.socket.poll_send_to(&self.wr, out_addr));
         trace!("written {}", n);
 
         let wrote_all = n == self.wr.len();
@@ -110,15 +114,15 @@ impl<C: Encoder> Sink for UnixDatagramFramed<C> {
 const INITIAL_RD_CAPACITY: usize = 64 * 1024;
 const INITIAL_WR_CAPACITY: usize = 8 * 1024;
 
-impl<C> UnixDatagramFramed<C> {
+impl<C, P> UnixDatagramFramed<C, P> {
     /// Create a new `UnixDatagramFramed` backed by the given socket and codec.
     ///
     /// See struct level documentation for more details.
-    pub fn new(socket: UnixDatagram, codec: C) -> UnixDatagramFramed<C> {
+    pub fn new(socket: UnixDatagram, codec: C) -> Self {
         UnixDatagramFramed {
             socket: socket,
             codec: codec,
-            out_addr: PathBuf::new(),
+            out_addr: None,
             rd: BytesMut::with_capacity(INITIAL_RD_CAPACITY),
             wr: BytesMut::with_capacity(INITIAL_WR_CAPACITY),
             flushed: true,
